@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="utf-8" />
+	<title>Dropzone Upload Example</title>
+	<link rel="stylesheet" href="infinity-dropzone.css">
+	<style>
+		#log {
+			width: 480px;
+			margin-top: 12px;
+			font-family: monospace;
+			font-size: 13px;
+			white-space: pre-wrap;
+		}
+	</style>
+</head>
+<body>
+<form>
+	<div class="dropzone">
+		<div class="zonebox">
+			파일을 여기로 드래그하거나 클릭해서 선택하세요
+			<input type="file" multiple />
+		</div>
+		<input type="hidden" name="fileKeys">
+		<div class="files"></div>
+	</div>
+</form>
+<div id="log"></div>
+
+<script src="infinity-dropzone.js"></script>
+<script>
+	const logEl = document.getElementById('log');
+	function log(line) {
+		logEl.textContent += line + '\n';
+	}
+
+	makeDropzone('.dropzone', 'upload.php', {
+		allowedExts:['jpg', 'jpeg', 'png', 'gz', 'bz2', 'iso', 'txt', 'csv', 'svg'],
+		// maxFileSize: 2 * 1024 * 1024 * 1024,
+		// maxFiles: 100,
+	});
+
+	const zone = document.querySelector('.dropzone .zonebox');
+	zone.addEventListener('dropzone:queued', (e) => {
+		log(`[대기] ${e.detail.file.name} -> fileKey=${e.detail.fileKey}`);
+	});
+	zone.addEventListener('dropzone:complete', (e) => {
+		const { originalName, result } = e.detail;
+		log(`[완료] ${originalName} -> fileKey=${result.fileKey}`);
+	});
+	zone.addEventListener('dropzone:rejected', (e) => {
+		log(`[거부] ${e.detail.file.name} (허용되지 않는 확장자)`);
+	});
+	zone.addEventListener('dropzone:error', (e) => {
+		log(`[에러] ${e.detail.file.name}: ${e.detail.error.message}`);
+	});
+</script>
+</body>
+</html>
