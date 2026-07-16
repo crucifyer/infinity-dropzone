@@ -16,13 +16,16 @@
 			background-color: #f1f5f9;
 			border-color: #cbd5e1;
 			color: #94a3b8;
-			cursor: not-allowed;
 		}
 
 		&.dropping {
 			background-color: #eef6ff;
 			border-color: #3b82f6;
 			color: #3b82f6;
+		}
+
+		.dz-label {
+			pointer-events: none;
 		}
 
 		input[type=file] {
@@ -36,11 +39,14 @@
 		flex-direction: column;
 		gap: 8px;
 		width: 480px;
+		max-height: 320px;
+		overflow-y: auto;
+		padding-right: 4px;
 
 		.file-item {
 			display: flex;
-			justify-content: space-between;
-			align-items: center;
+			flex-direction: column;
+			gap: 6px;
 			background: #f8fafc;
 			border: 1px solid #e2e8f0;
 			border-radius: 6px;
@@ -50,7 +56,28 @@
 			color: #334155;
 			transition: all 0.2s ease;
 
+			.file-item-top {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				gap: 8px;
+			}
+
+			.file-name {
+				flex: 1 1 auto;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.file-size {
+				flex: 0 0 auto;
+				color: #64748b;
+				font-size: 12px;
+			}
+
 			.remove-btn {
+				flex: 0 0 auto;
 				color: #ef4444;
 				cursor: pointer;
 				font-weight: bold;
@@ -64,6 +91,76 @@
 
 			.remove-btn:hover {
 				color: #b91c1c;
+			}
+
+			.file-progress-bar {
+				height: 6px;
+				background: #e2e8f0;
+				border-radius: 3px;
+				overflow: hidden;
+			}
+
+			.file-progress-fill {
+				height: 100%;
+				width: 0%;
+				background: #3b82f6;
+				transition: width 0.15s ease;
+			}
+
+			.file-percent {
+				font-size: 12px;
+				color: #64748b;
+				text-align: right;
+			}
+
+			.file-error-message {
+				font-size: 12px;
+				color: #ef4444;
+				display: none;
+			}
+
+			&.status-pending {
+				.file-progress-fill {
+					background: #cbd5e1;
+				}
+			}
+
+			&.status-done {
+				border-color: #86efac;
+				background: #f0fdf4;
+
+				.file-progress-fill {
+					background: #22c55e;
+				}
+			}
+
+			&.status-error {
+				border-color: #fecaca;
+				background: #fef2f2;
+
+				.file-progress-fill {
+					background: #ef4444;
+					width: 100% !important;
+				}
+
+				.file-error-message {
+					display: block;
+				}
+			}
+
+			&.status-blocked {
+				border-color: #fde68a;
+				background: #fffbeb;
+
+				.file-progress-fill {
+					background: #f59e0b;
+					width: 100% !important;
+				}
+
+				.file-error-message {
+					display: block;
+					color: #b45309;
+				}
 			}
 		}
 

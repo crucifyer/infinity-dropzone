@@ -4,55 +4,48 @@
 	<meta charset="utf-8" />
 	<title>Dropzone Upload Example</title>
 	<link rel="stylesheet" href="infinity-dropzone.css">
-	<style>
-		#log {
-			width: 480px;
-			margin-top: 12px;
-			font-family: monospace;
-			font-size: 13px;
-			white-space: pre-wrap;
-		}
-	</style>
 </head>
 <body>
 <form>
 	<div class="dropzone">
 		<div class="zonebox">
-			파일을 여기로 드래그하거나 클릭해서 선택하세요
+			<span class="dz-label"></span>
 			<input type="file" multiple />
 		</div>
 		<input type="hidden" name="fileKeys">
 		<div class="files"></div>
 	</div>
 </form>
-<div id="log"></div>
 
 <script src="infinity-dropzone.js"></script>
 <script>
-	const logEl = document.getElementById('log');
-	function log(line) {
-		logEl.textContent += line + '\n';
-	}
-
 	makeDropzone('.dropzone', 'upload.php', {
-		allowedExts:['jpg', 'jpeg', 'png', 'gz', 'bz2', 'iso', 'txt', 'csv', 'svg'],
+		allowedExts: ['jpg', 'jpeg', 'png', 'gz', 'bz2', 'iso', 'txt', 'csv', 'svg'],
 		// maxFileSize: 2 * 1024 * 1024 * 1024,
 		// maxFiles: 100,
+		// i18nMessages: {
+		// 	'placeholder': 'ファイルをここにドラッグするか、クリックして選択してください',
+		// 	'UploadCancelledError': 'アップロードがキャンセルされました',
+		// 	'UploadFailedError': 'アップロードに失敗しました',
+		// 	'UploadRejectedError': 'アップロードが拒否されました',
+		// 	'ServerResponseParseError': 'サーバー応答の解析に失敗しました',
+		// 	'NetworkError': 'ネットワークエラー',
+		// 	'progress': '進捗率',
+		// 	'pending': '保留中',
+		// 	'done': '完了',
+		// 	'error': '失敗',
+		// 	'blocked': '拒否',
+		// 	'duplicate-file': 'すでにリストにあるファイルです',
+		// 	'extension-not-allowed': '許可されていない拡張子です',
+		// 	'file-too-large': '許可された最大容量を超えました',
+		// 	'max-files-reached': 'これ以上追加できません（最大数を超えました）',
+		// },
 	});
 
+	// dropzone:queued, dropzone:complete, dropzone:rejected, dropzone:error
 	const zone = document.querySelector('.dropzone .zonebox');
-	zone.addEventListener('dropzone:queued', (e) => {
-		log(`[대기] ${e.detail.file.name} -> fileKey=${e.detail.fileKey}`);
-	});
-	zone.addEventListener('dropzone:complete', (e) => {
-		const { originalName, result } = e.detail;
-		log(`[완료] ${originalName} -> fileKey=${result.fileKey}`);
-	});
 	zone.addEventListener('dropzone:rejected', (e) => {
-		log(`[거부] ${e.detail.file.name} (허용되지 않는 확장자)`);
-	});
-	zone.addEventListener('dropzone:error', (e) => {
-		log(`[에러] ${e.detail.file.name}: ${e.detail.error.message}`);
+		console.warn('업로드가 거부되었습니다:', e.detail.file.name, e.detail.reason);
 	});
 </script>
 </body>

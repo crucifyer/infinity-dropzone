@@ -6,33 +6,70 @@ Source: https://github.com/crucifyer/infinity-dropzone
 (function (global) {
 	'use strict';
 
+	let i18nMessages = {};
+	const I18N_MESSAGES = {
+		'ko': {
+			'placeholder': '파일을 여기로 드래그하거나 클릭해서 선택하세요',
+			'UploadCancelledError': '업로드가 취소되었습니다',
+			'UploadFailedError': '업로드 실패',
+			'UploadRejectedError': '업로드가 거부되었습니다',
+			'ServerResponseParseError': '서버 응답 파싱 실패',
+			'NetworkError': '네트워크 에러',
+			'progress': '진행률',
+			'pending': '대기 중',
+			'done': '완료',
+			'error': '실패',
+			'blocked': '거부됨',
+			'duplicate-file': '이미 목록에 있는 파일입니다',
+			'extension-not-allowed': '허용되지 않는 확장자입니다',
+			'file-too-large': '허용된 최대 용량을 초과했습니다',
+			'max-files-reached': '더 이상 추가할 수 없습니다 (최대 개수 초과)',
+		},
+		'en': {
+			'placeholder': 'Drag the file here or click to select it',
+			'UploadCancelledError': 'Upload canceled',
+			'UploadFailedError': 'Upload failed',
+			'UploadRejectedError': 'Upload rejected',
+			'ServerResponseParseError': 'Failed to parse server response',
+			'NetworkError': 'Network error',
+			'progress': 'Progress',
+			'pending': 'Pending',
+			'done': 'Done',
+			'error': 'Error',
+			'blocked': 'Blocked',
+			'duplicate-file': 'This file is already in the list',
+			'extension-not-allowed': 'Unallowed file extension',
+			'file-too-large': 'Exceeds the maximum allowed size',
+			'max-files-reached': 'Cannot add any more (maximum number exceeded)',
+		},
+	};
+	function getI18nMessage(key) {
+		return i18nMessages[key] || I18N_MESSAGES[navigator.language]?.[key] || I18N_MESSAGES[navigator.language.split('-')[0]]?.[key] || I18N_MESSAGES.en[key] || key;
+	}
+
 	const MAX_CONCURRENT_UPLOADS = 2;
 	const MAX_CHUNK_SIZE = 90 * 1024 * 1024;
 	const COMPRESSIBLE_EXTS = ['txt', 'csv', 'css', 'js', 'json', 'md', 'svg', 'ini', 'toml', 'yml'];
 
-	function createUploadQueue(concurrency) {
-		let active = 0;
-		const queue = [];
-
-		function runNext() {
-			if (active >= concurrency || queue.length === 0) return;
-			active++;
-			const { task, resolve, reject } = queue.shift();
-			Promise.resolve()
-				.then(task)
-				.then(resolve, reject)
-				.finally(() => {
-					active--;
-					runNext();
-				});
+	class UploadCancelledError extends Error {
+		constructor() {
+			super(getI18nMessage( 'UploadCancelledError'));
+			this.name = 'UploadCancelledError';
 		}
+	}
 
+	function createCancelToken() {
 		return {
-			add(task) {
-				return new Promise((resolve, reject) => {
-					queue.push({ task, resolve, reject });
-					runNext();
-				});
+			cancelled: false,
+			xhr: null,
+			cancel() {
+				this.cancelled = true;
+				if (this.xhr) {
+					this.xhr.abort();
+				}
+			},
+			throwIfCancelled() {
+				if (this.cancelled) throw new UploadCancelledError();
 			},
 		};
 	}
@@ -74,22 +111,24 @@ Source: https://github.com/crucifyer/infinity-dropzone
 		};
 	}
 
-	async function streamUpload(uploadUrl, uploadQueue, { sessionId, fileKey, ext, compressed, stream }, onFileProgress) {
+	async function streamUpload(uploadUrl, { sessionId, fileKey, ext, compressed, stream }, onFileProgress, cancelToken) {
 		const reader = stream.getReader();
 		const acc = createByteAccumulator();
 		let partIndex = 0;
 		let sentAnyPart = false;
 		let completedChunksBytes = 0;
 
-		for (;;) {
-			const { value, done } = await reader.read();
-			if (value) acc.push(value);
+		try {
+			for (;;) {
+				cancelToken.throwIfCancelled();
+				const { value, done } = await reader.read();
+				if (value) acc.push(value);
 
-			while (acc.length >= MAX_CHUNK_SIZE) {
-				const partBytes = acc.takeExact(MAX_CHUNK_SIZE);
-				const partSize = partBytes.length;
-				await uploadQueue.add(() =>
-					sendPart(uploadUrl, {
+				while (acc.length >= MAX_CHUNK_SIZE) {
+					cancelToken.throwIfCancelled();
+					const partBytes = acc.takeExact(MAX_CHUNK_SIZE);
+					const partSize = partBytes.length;
+					await sendPart(uploadUrl, {
 						sessionId,
 						fileKey,
 						ext,
@@ -97,25 +136,21 @@ Source: https://github.com/crucifyer/infinity-dropzone
 						partIndex,
 						isSingle: false,
 						blob: new Blob([partBytes]),
-					}, (loaded, total) => {
-						if (onFileProgress) {
-							onFileProgress(completedChunksBytes + loaded);
-						}
-					})
-				);
-				completedChunksBytes += partSize;
-				sentAnyPart = true;
-				partIndex++;
+					}, (loaded) => {
+						if (onFileProgress) onFileProgress(completedChunksBytes + loaded);
+					}, cancelToken);
+					completedChunksBytes += partSize;
+					sentAnyPart = true;
+					partIndex++;
+				}
+
+				if (done) break;
 			}
 
-			if (done) break;
-		}
+			const remaining = acc.takeRemaining();
 
-		const remaining = acc.takeRemaining();
-
-		if (!sentAnyPart) {
-			return uploadQueue.add(() =>
-				sendPart(uploadUrl, {
+			if (!sentAnyPart) {
+				return await sendPart(uploadUrl, {
 					sessionId,
 					fileKey,
 					ext,
@@ -123,18 +158,14 @@ Source: https://github.com/crucifyer/infinity-dropzone
 					partIndex: 0,
 					isSingle: true,
 					blob: new Blob([remaining]),
-				}, (loaded, total) => {
-					if (onFileProgress) {
-						onFileProgress(loaded);
-					}
-				})
-			);
-		}
+				}, (loaded) => {
+					if (onFileProgress) onFileProgress(loaded);
+				}, cancelToken);
+			}
 
-		if (remaining.length > 0) {
-			const partSize = remaining.length;
-			await uploadQueue.add(() =>
-				sendPart(uploadUrl, {
+			if (remaining.length > 0) {
+				const partSize = remaining.length;
+				await sendPart(uploadUrl, {
 					sessionId,
 					fileKey,
 					ext,
@@ -142,16 +173,18 @@ Source: https://github.com/crucifyer/infinity-dropzone
 					partIndex,
 					isSingle: false,
 					blob: new Blob([remaining]),
-				}, (loaded, total) => {
-					if (onFileProgress) {
-						onFileProgress(completedChunksBytes + loaded);
-					}
-				})
-			);
-			completedChunksBytes += partSize;
-		}
+				}, (loaded) => {
+					if (onFileProgress) onFileProgress(completedChunksBytes + loaded);
+				}, cancelToken);
+				completedChunksBytes += partSize;
+			}
 
-		return uploadQueue.add(() => sendComplete(uploadUrl, { sessionId, fileKey, compressed }));
+			cancelToken.throwIfCancelled();
+			return await sendComplete(uploadUrl, { sessionId, fileKey, compressed }, cancelToken);
+		} catch (err) {
+			reader.cancel().catch(() => {});
+			throw err;
+		}
 	}
 
 	function getExt(filename) {
@@ -160,37 +193,59 @@ Source: https://github.com/crucifyer/infinity-dropzone
 		return 'unknown';
 	}
 
-	function postForm(uploadUrl, fields, onProgress) {
+	function formatBytes(bytes) {
+		if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+		const value = bytes / Math.pow(1024, i);
+		return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+	}
+
+	function postForm(uploadUrl, fields, onProgress, cancelToken) {
 		return new Promise((resolve, reject) => {
+			if (cancelToken && cancelToken.cancelled) {
+				reject(new UploadCancelledError());
+				return;
+			}
+
 			const xhr = new XMLHttpRequest();
 			xhr.open('POST', uploadUrl);
 
+			if (cancelToken) cancelToken.xhr = xhr;
+
 			if (onProgress && xhr.upload) {
 				xhr.upload.addEventListener('progress', (e) => {
-					if (e.lengthComputable) {
-						onProgress(e.loaded, e.total);
-					}
+					if (e.lengthComputable) onProgress(e.loaded, e.total);
 				});
 			}
 
 			xhr.onload = () => {
+				if (cancelToken) cancelToken.xhr = null;
 				if (xhr.status >= 200 && xhr.status < 300) {
 					try {
 						const json = JSON.parse(xhr.responseText);
 						if (json.status === 200) {
 							resolve(json);
 						} else {
-							reject(new Error(json.error || `업로드 실패 (status=${json.status})`));
+							reject(new Error(json.error || `${getI18nMessage('UploadFailedError')} (status=${json.status})`));
 						}
 					} catch (e) {
-						reject(new Error('서버 응답 파싱 실패'));
+						reject(new Error(getI18nMessage('ServerResponseParseError')));
 					}
 				} else {
-					reject(new Error(`업로드 실패 (status=${xhr.status})`));
+					reject(new Error(`${getI18nMessage('UploadFailedError')} (status=${xhr.status})`));
 				}
 			};
 
-			xhr.onerror = () => reject(new Error('네트워크 에러'));
+			xhr.onerror = () => {
+				if (cancelToken) cancelToken.xhr = null;
+				reject(new Error(getI18nMessage('NetworkError')));
+			};
+
+			xhr.onabort = () => {
+				if (cancelToken) cancelToken.xhr = null;
+				reject(new UploadCancelledError());
+			};
 
 			const fd = new FormData();
 			for (const [k, v] of Object.entries(fields)) {
@@ -200,7 +255,7 @@ Source: https://github.com/crucifyer/infinity-dropzone
 		});
 	}
 
-	function sendPart(uploadUrl, { sessionId, fileKey, ext, compressed, partIndex, isSingle, blob }, onProgress) {
+	function sendPart(uploadUrl, { sessionId, fileKey, ext, compressed, partIndex, isSingle, blob }, onProgress, cancelToken) {
 		return postForm(uploadUrl, {
 			sessionId,
 			fileKey,
@@ -209,17 +264,23 @@ Source: https://github.com/crucifyer/infinity-dropzone
 			action: isSingle ? 'single' : 'part',
 			partIndex: String(partIndex),
 			chunk: new File([blob], fileKey + '.part' + partIndex),
-		}, onProgress);
+		}, onProgress, cancelToken);
 	}
 
-	function sendComplete(uploadUrl, { sessionId, fileKey, compressed }) {
+	function sendComplete(uploadUrl, { sessionId, fileKey, compressed }, cancelToken) {
 		return postForm(uploadUrl, {
 			sessionId,
 			fileKey,
 			compressed: compressed ? '1' : '0',
 			action: 'complete',
-		});
+		}, null, cancelToken);
 	}
+
+	function fileSignature(file) {
+		return `${file.name}-${file.size}-${file.lastModified}`;
+	}
+
+	const STATUS_ORDER = { done: 0, error: 1, blocked: 1, uploading: 2, pending: 3 };
 
 	function makeDropzone(selector, uploadUrl, options) {
 		const normalizedAllowed = options?.allowedExts && Array.isArray(options.allowedExts) && options.allowedExts.length
@@ -227,56 +288,206 @@ Source: https://github.com/crucifyer/infinity-dropzone
 			: null;
 		const maxFileSize = options?.maxFileSize ?? Infinity;
 		const maxFiles = options?.maxFiles ?? Infinity;
+		if(options?.i18nMessages) i18nMessages = options.i18nMessages;
 
 		document.querySelectorAll(selector).forEach((dzone) => {
 			const zone = dzone.querySelector('.zonebox');
 			const input = zone.querySelector('input[type=file]');
+			const labelEl = zone.querySelector('.dz-label');
 			const fileKeysInput = dzone.querySelector('input[name="fileKeys"]');
 			const filesContainer = dzone.querySelector('.files');
 
-			let isUploading = false;
-			const uploadedFiles = []; // [{"name":fileName,"key":fileKey}]
+			const originalLabelText = getI18nMessage('placeholder');
+			if(labelEl) labelEl.textContent = originalLabelText;
 
 			const sessionId = crypto.randomUUID();
 
-			const fileNameMap = new Map();
+			const fileStates = new Map();
+			let sequence = 0;
 
-			const uploadQueue = createUploadQueue(MAX_CONCURRENT_UPLOADS);
+			let activeCount = 0;
+			const pendingQueue = [];
 
-			function updateFileList() {
-				if (fileKeysInput) {
-					fileKeysInput.value = JSON.stringify({sessionId, files:uploadedFiles});
+			const signatures = new Map();
+
+			function emit(name, detail) {
+				zone.dispatchEvent(new CustomEvent(name, { detail }));
+			}
+
+			function isBusy() {
+				return activeCount > 0 || pendingQueue.length > 0;
+			}
+
+			function syncBusyClass() {
+				zone.classList.toggle('uploading', isBusy());
+				updateOverallLabel();
+			}
+
+			function computeOverallProgress() {
+				let loaded = 0;
+				let total = 0;
+				let count = 0;
+				let doneCount = 0;
+
+				for (const s of fileStates.values()) {
+					if (s.status === 'blocked') continue;
+					count++;
+					total += s.totalBytes;
+					if (s.status === 'done') {
+						loaded += s.totalBytes;
+						doneCount++;
+					} else {
+						loaded += s.loadedBytes;
+					}
 				}
-				if (filesContainer) {
-					filesContainer.innerHTML = '';
-					uploadedFiles.forEach((file, index) => {
-						const item = document.createElement('div');
-						item.className = 'file-item';
 
-						const nameSpan = document.createElement('span');
-						nameSpan.textContent = file.name;
+				return { loaded, total, count, doneCount };
+			}
 
-						const removeBtn = document.createElement('button');
-						removeBtn.type = 'button';
-						removeBtn.className = 'remove-btn';
-						removeBtn.textContent = 'x';
-						removeBtn.addEventListener('click', () => {
-							uploadedFiles.splice(index, 1);
-							updateFileList();
-						});
+			function updateOverallLabel() {
+				if (!labelEl) return;
 
-						item.appendChild(nameSpan);
-						item.appendChild(removeBtn);
-						filesContainer.appendChild(item);
-					});
+				const { loaded, total, count, doneCount } = computeOverallProgress();
+
+				if (count === 0) {
+					labelEl.textContent = originalLabelText;
+					return;
 				}
+
+				const percent = total > 0 ? Math.round((loaded / total) * 100) : 100;
+				labelEl.textContent = `${getI18nMessage('progress')} ${percent}% (${doneCount}/${count} ${getI18nMessage('done')})`;
+			}
+
+			function updateFileKeysInput() {
+				if (!fileKeysInput) return;
+				const files = Array.from(fileStates.values())
+					.filter((s) => s.status === 'done')
+					.map((s) => ({ name: s.originalName, key: s.fileKey, checksum: s.checksum }));
+				fileKeysInput.value = JSON.stringify({ sessionId, files });
+			}
+
+			function resort() {
+				const states = Array.from(fileStates.values());
+				states.sort((a, b) => {
+					const diff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+					if (diff !== 0) return diff;
+					return a.sequence - b.sequence;
+				});
+				for (const s of states) {
+					filesContainer.appendChild(s.rowEl);
+				}
+			}
+
+			function refreshStatusLabel(state) {
+				switch (state.status) {
+					case 'pending':
+						state.percentEl.textContent = getI18nMessage(state.status);
+						state.barFillEl.style.width = '0%';
+						break;
+					case 'uploading':
+						updateProgress(state, state.loadedBytes);
+						break;
+					case 'done':
+						state.barFillEl.style.width = '100%';
+						state.percentEl.textContent = getI18nMessage(state.status);
+						break;
+					case 'error':
+						state.percentEl.textContent = getI18nMessage(state.status);
+						break;
+					case 'blocked':
+						state.percentEl.textContent = getI18nMessage(state.status);
+						state.barFillEl.style.width = '100%';
+						break;
+				}
+			}
+
+			function setStatus(state, status) {
+				state.status = status;
+				state.rowEl.className = 'file-item status-' + status;
+				refreshStatusLabel(state);
+				resort();
+				syncBusyClass();
+			}
+
+			function updateProgress(state, loadedBytes) {
+				state.loadedBytes = loadedBytes;
+				const total = state.totalBytes || 1;
+				const percent = Math.max(0, Math.min(100, (loadedBytes / total) * 100));
+				state.barFillEl.style.width = percent.toFixed(0) + '%';
+				state.percentEl.textContent = percent.toFixed(0) + '%';
+				updateOverallLabel();
+			}
+
+			function createRow(state) {
+				const row = document.createElement('div');
+				row.className = 'file-item status-' + state.status;
+
+				const top = document.createElement('div');
+				top.className = 'file-item-top';
+
+				const nameEl = document.createElement('span');
+				nameEl.className = 'file-name';
+				nameEl.textContent = state.originalName;
+				nameEl.title = state.originalName;
+
+				const sizeEl = document.createElement('span');
+				sizeEl.className = 'file-size';
+				sizeEl.textContent = formatBytes(state.totalBytes);
+
+				const removeBtn = document.createElement('button');
+				removeBtn.type = 'button';
+				removeBtn.className = 'remove-btn';
+				removeBtn.textContent = 'x';
+				removeBtn.addEventListener('click', () => removeFile(state.fileKey));
+
+				top.append(nameEl, sizeEl, removeBtn);
+
+				const barOuter = document.createElement('div');
+				barOuter.className = 'file-progress-bar';
+				const barFill = document.createElement('div');
+				barFill.className = 'file-progress-fill';
+				barOuter.appendChild(barFill);
+
+				const percentEl = document.createElement('div');
+				percentEl.className = 'file-percent';
+				percentEl.textContent = '0%';
+
+				const errorEl = document.createElement('div');
+				errorEl.className = 'file-error-message';
+
+				row.append(top, barOuter, percentEl, errorEl);
+				filesContainer.appendChild(row);
+
+				state.rowEl = row;
+				state.barFillEl = barFill;
+				state.percentEl = percentEl;
+				state.errorEl = errorEl;
+			}
+
+			function removeFile(fileKey) {
+				const state = fileStates.get(fileKey);
+				if (!state) return;
+
+				if (state.status === 'pending' || state.status === 'uploading') {
+					state.cancelToken.cancel();
+					const idx = pendingQueue.indexOf(fileKey);
+					if (idx >= 0) pendingQueue.splice(idx, 1);
+				}
+
+				if (state.signature && signatures.get(state.signature) === fileKey) {
+					signatures.delete(state.signature);
+				}
+
+				state.rowEl.remove();
+				fileStates.delete(fileKey);
+				updateFileKeysInput();
+				syncBusyClass();
 			}
 
 			['dragenter', 'dragover'].forEach((evt) => {
 				zone.addEventListener(evt, (e) => {
 					e.preventDefault();
 					e.stopPropagation();
-					if (isUploading) return;
 					zone.classList.add('dropping');
 				});
 			});
@@ -289,131 +500,153 @@ Source: https://github.com/crucifyer/infinity-dropzone
 			});
 
 			zone.addEventListener('drop', (e) => {
-				if (isUploading) return;
 				const files = Array.from(e.dataTransfer.files || []);
 				handleFiles(files);
 			});
 
 			if (input) {
 				zone.addEventListener('click', (e) => {
-					if (isUploading) return;
 					if (e.target !== input) input.click();
 				});
 				input.addEventListener('change', (e) => {
-					if (isUploading) return;
 					handleFiles(Array.from(e.target.files || []));
 					input.value = '';
 				});
 			}
 
-			function emit(name, detail) {
-				zone.dispatchEvent(new CustomEvent(name, { detail }));
+			function addBlockedEntry(file, reason, signature) {
+				const fileKey = crypto.randomUUID() + '.blocked';
+				const state = {
+					fileKey,
+					file,
+					ext: getExt(file.name),
+					originalName: file.name,
+					totalBytes: file.size,
+					loadedBytes: 0,
+					status: 'blocked',
+					cancelToken: createCancelToken(),
+					sequence: sequence++,
+					checksum: null,
+					signature: signature || null,
+				};
+
+				fileStates.set(fileKey, state);
+				createRow(state);
+				state.errorEl.textContent = getI18nMessage(reason) || getI18nMessage('UploadRejectedError');
+				refreshStatusLabel(state);
+				resort();
+
+				emit('dropzone:rejected', { file, reason });
 			}
 
 			function handleFiles(files) {
-				if (isUploading) return;
-
-				const filesToUpload = [];
 				for (const file of files) {
+					const signature = fileSignature(file);
+					if (signatures.has(signature)) {
+						addBlockedEntry(file, 'duplicate-file', signature);
+						continue;
+					}
+
 					const ext = getExt(file.name);
 
 					if (normalizedAllowed && !normalizedAllowed.includes(ext)) {
-						emit('dropzone:rejected', { file, reason: 'extension-not-allowed' });
+						addBlockedEntry(file, 'extension-not-allowed');
 						continue;
 					}
 					if (file.size > maxFileSize) {
-						emit('dropzone:rejected', { file, reason: 'file-too-large' });
+						addBlockedEntry(file, 'file-too-large');
 						continue;
 					}
-					if (uploadedFiles.length >= maxFiles) {
-						emit('dropzone:rejected', { file, reason: 'max-files-reached' });
+					const trackedCount = Array.from(fileStates.values()).filter((s) => s.status !== 'blocked').length;
+					if (trackedCount >= maxFiles) {
+						addBlockedEntry(file, 'max-files-reached');
 						continue;
 					}
-					filesToUpload.push(file);
-				}
 
-				if (filesToUpload.length === 0) return;
-
-				isUploading = true;
-				zone.classList.add('uploading');
-
-				const originalText = '파일을 여기로 드래그하거나 클릭해서 선택하세요';
-				zone.textContent = '업로드 중... (0%)';
-
-				const totalBatchSize = filesToUpload.reduce((sum, f) => sum + f.size, 0);
-				const progressMap = new Map(); // fileKey -> loadedBytes
-				let pendingCount = filesToUpload.length;
-
-				function updateBatchProgress() {
-					let loadedSum = 0;
-					for (const loaded of progressMap.values()) {
-						loadedSum += loaded;
-					}
-					const percent = totalBatchSize > 0 ? Math.min(100, Math.round((loadedSum / totalBatchSize) * 100)) : 0;
-					zone.textContent = `업로드 중... (${percent}%)`;
-				}
-
-				function checkBatchComplete() {
-					pendingCount--;
-					if (pendingCount === 0) {
-						isUploading = false;
-						zone.classList.remove('uploading');
-						zone.textContent = originalText;
-						if (input) input.value = '';
-					}
-				}
-
-				for (const file of filesToUpload) {
-					const ext = getExt(file.name);
 					const fileKey = crypto.randomUUID() + (ext ? '.' + ext : '');
-					fileNameMap.set(fileKey, file.name);
+					const state = {
+						fileKey,
+						file,
+						ext,
+						originalName: file.name,
+						totalBytes: file.size,
+						loadedBytes: 0,
+						status: 'pending',
+						cancelToken: createCancelToken(),
+						sequence: sequence++,
+						checksum: null,
+						signature,
+					};
+
+					signatures.set(signature, fileKey);
+					fileStates.set(fileKey, state);
+					createRow(state);
+					resort();
 
 					emit('dropzone:queued', { file, fileKey, sessionId });
 
-					progressMap.set(fileKey, 0);
-
-					uploadFile(file, fileKey, ext, (loadedBytes) => {
-						progressMap.set(fileKey, loadedBytes);
-						updateBatchProgress();
-					})
-						.then((result) => {
-							uploadedFiles.push({ name: file.name, key: fileKey });
-							updateFileList();
-
-							emit('dropzone:complete', {
-								file,
-								fileKey,
-								originalName: fileNameMap.get(fileKey),
-								result,
-							});
-						})
-						.catch((err) => {
-							emit('dropzone:error', { file, fileKey, error: err });
-						})
-						.finally(() => {
-							checkBatchComplete();
-						});
+					pendingQueue.push(fileKey);
 				}
+
+				syncBusyClass();
+				pump();
 			}
 
-			async function uploadFile(file, fileKey, ext, onProgress) {
-				const shouldCompress =
-					COMPRESSIBLE_EXTS.includes(ext) && typeof CompressionStream !== 'undefined';
+			function pump() {
+				while (activeCount < MAX_CONCURRENT_UPLOADS && pendingQueue.length > 0) {
+					const fileKey = pendingQueue.shift();
+					const state = fileStates.get(fileKey);
+					if (!state) continue;
+					startUpload(state);
+				}
+				syncBusyClass();
+			}
 
+			function startUpload(state) {
+				activeCount++;
+				setStatus(state, 'uploading');
+				state.rowEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+				uploadFile(state)
+					.then((result) => {
+						if (!fileStates.has(state.fileKey)) return;
+						state.checksum = result.checksum || null;
+						setStatus(state, 'done');
+						updateFileKeysInput();
+						emit('dropzone:complete', {
+							file: state.file,
+							fileKey: state.fileKey,
+							originalName: state.originalName,
+							result,
+						});
+					})
+					.catch((err) => {
+						if (!fileStates.has(state.fileKey)) return;
+						if (err && err.name === 'UploadCancelledError') return;
+						setStatus(state, 'error');
+						state.errorEl.textContent = err.message || '업로드 실패';
+						emit('dropzone:error', { file: state.file, fileKey: state.fileKey, error: err });
+					})
+					.finally(() => {
+						activeCount--;
+						pump();
+					});
+			}
+
+			async function uploadFile(state) {
+				const { file, ext, fileKey, cancelToken } = state;
+				const shouldCompress = COMPRESSIBLE_EXTS.includes(ext) && typeof CompressionStream !== 'undefined';
 				const compressed = shouldCompress;
 				const stream = shouldCompress
 					? file.stream().pipeThrough(new CompressionStream('gzip'))
 					: file.stream();
 
-				const result = await streamUpload(uploadUrl, uploadQueue, {
-					sessionId,
-					fileKey,
-					ext,
-					compressed,
-					stream,
-				}, onProgress);
-
-				return result;
+				return streamUpload(
+					uploadUrl,
+					{ sessionId, fileKey, ext, compressed, stream },
+					(loadedBytes) => updateProgress(state, loadedBytes),
+					cancelToken
+				);
 			}
 		});
 	}
